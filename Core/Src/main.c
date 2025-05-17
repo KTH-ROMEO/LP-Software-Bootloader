@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "FRAM.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,6 +41,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 
+I2C_HandleTypeDef hi2c4;
+
 IWDG_HandleTypeDef hiwdg;
 
 /* USER CODE BEGIN PV */
@@ -54,61 +56,50 @@ typedef enum {
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MPU_Config(void);
+static void MX_GPIO_Init(void);
 static void MX_IWDG_Init(void);
+static void MX_I2C4_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define METADATA_ADDRESS 0x08008000
+#define METADATA_ADDRESS FRAM_SWEEP_TABLE_SECTION_START
+//#define METADATA_ADDRESS 0x08000000
 #define GOLDEN_IMAGE_ADDRESS 0x08010000 // Application start address
 #define SECOND_IMAGE_ADDRESS 0x08020000
 #define THIRD_IMAGE_ADDRESS 0x08040000
 
 typedef void (*pFunction)(void); // Function pointer type for application entry
 
-//void configure_metadata(uint8_t magic_number, uint8_t image_index, uint8_t boot_feedback)
-//{
-//  if(magic_number != 22 || boot_feedback != BOOTED_SUCCESFULLY)
-//  {
-//    HAL_FLASH_Unlock();
-//
-//    // the 3rd byte of the metadata represents the following things:
-//    // -> 0 = the system has to boot from this new image for the first time (set when a JUMP_TO_IMAGE command was received
-//    // -> 1 = the bootloader jumped to this new image, and waits to see if it can successfully boot
-//    // -> 2 = the system booted successfully
-//
-//    FLASH_EraseInitTypeDef eraseInitStruct;
-//    uint32_t pageError = 0;
-//
-//    eraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;     // or FLASH_TYPEERASE_PAGES (depends on family)
-//    eraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;    // depends on your supply voltage
-//    eraseInitStruct.Sector = FLASH_SECTOR_1;                 // sector you want to erase
-//    eraseInitStruct.NbSectors = 1;
-//
-//    HAL_FLASHEx_Erase(&eraseInitStruct, &pageError);
-//
-//    HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, METADATA_ADDRESS, 22);
-//    HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, METADATA_ADDRESS+1, image_index);
-//    HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, METADATA_ADDRESS+2, TRYING_TO_BOOT);
-//
-//    HAL_FLASH_Lock();
-//  }
-//}
 
 void JumpToApp(void)
 {
-    uint8_t magic_number;
-    uint8_t image_index;
-    uint8_t boot_feedback;
+    uint8_t magic_number = 10;
+    uint8_t image_index = 10;
+    uint8_t boot_counter = 10, boot_counter_2 = 10;
     uint32_t *app_vector_table;
     uint32_t app_sp, app_start;
 
+    uint16_t addr = METADATA_ADDRESS;
+
     // --- Read metadata ---
-    magic_number   = *(volatile uint8_t*)(METADATA_ADDRESS);
-    image_index    = *(volatile uint8_t*)(METADATA_ADDRESS + 1);
-    boot_feedback  = *(volatile uint8_t*)(METADATA_ADDRESS + 2);
+//    magic_number   = *(volatile uint8_t*)(METADATA_ADDRESS);
+//    image_index    = *(volatile uint8_t*)(METADATA_ADDRESS + 1);
+//    boot_counter  = *(volatile uint8_t*)(METADATA_ADDRESS + 2);
+
+	readFRAM(addr, (uint8_t *)&magic_number, 1);
+	readFRAM(addr+1, (uint8_t *)&image_index, 1);
+	readFRAM(addr+2, (uint8_t *)&boot_counter, 1);
+
+	boot_counter++;
+
+	writeFRAM(addr+2, (uint8_t *)&boot_counter, 1);
+
+	readFRAM(addr+2, (uint8_t *)&boot_counter_2, 1);
 
     // --- Handle IWDG reset: force booting golden image on watchdog reset ---
     if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST))
@@ -118,6 +109,7 @@ void JumpToApp(void)
     }
 
     // --- Check metadata integrity ---
+    // TO DO: implement a proper CRC check
     if (magic_number != 22)
     {
         image_index = 1; // Fallback to golden image
@@ -164,6 +156,9 @@ int main(void)
 
   /* USER CODE BEGIN 1 */
 
+	// MAKE SURE THAT THE MPU_Config() part is commented out
+	// IF YOU REGENERATE THE CODE, it will be included
+
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
@@ -172,24 +167,27 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-//  HAL_Init();
+  HAL_Init();
 
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
 
   /* Configure the system clock */
-//  SystemClock_Config();
+  SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
+  MX_GPIO_Init();
   MX_IWDG_Init();
+  MX_I2C4_Init();
   /* USER CODE BEGIN 2 */
   __HAL_DBGMCU_FREEZE_IWDG();
 
+  HAL_Delay(2000);
   JumpToApp();
   /* USER CODE END 2 */
 
@@ -202,6 +200,96 @@ int main(void)
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief I2C4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C4_Init(void)
+{
+
+  /* USER CODE BEGIN I2C4_Init 0 */
+
+  /* USER CODE END I2C4_Init 0 */
+
+  /* USER CODE BEGIN I2C4_Init 1 */
+
+  /* USER CODE END I2C4_Init 1 */
+  hi2c4.Instance = I2C4;
+  hi2c4.Init.Timing = 0x00303D5B;
+  hi2c4.Init.OwnAddress1 = 0;
+  hi2c4.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c4.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c4.Init.OwnAddress2 = 0;
+  hi2c4.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c4.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c4.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c4, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c4, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C4_Init 2 */
+
+  /* USER CODE END I2C4_Init 2 */
+
 }
 
 /**
@@ -233,9 +321,55 @@ static void MX_IWDG_Init(void)
 
 }
 
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+/* USER CODE BEGIN MX_GPIO_Init_1 */
+/* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+/* USER CODE BEGIN MX_GPIO_Init_2 */
+/* USER CODE END MX_GPIO_Init_2 */
+}
+
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+ /* MPU Configuration */
+
+void MPU_Config(void)
+{
+  MPU_Region_InitTypeDef MPU_InitStruct = {0};
+
+  /* Disables the MPU */
+  HAL_MPU_Disable();
+
+  /** Initializes and configures the Region and the memory to be protected
+  */
+  MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number = MPU_REGION_NUMBER0;
+  MPU_InitStruct.BaseAddress = 0x0;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_4GB;
+  MPU_InitStruct.SubRegionDisable = 0x87;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_NO_ACCESS;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
+  MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE;
+  MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+  /* Enables the MPU */
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
