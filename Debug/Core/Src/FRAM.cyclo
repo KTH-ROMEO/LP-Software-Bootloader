@@ -1,2 +1,6 @@
-../Core/Src/FRAM.c:11:19:writeFRAM	1
-../Core/Src/FRAM.c:15:19:readFRAM	1
+../Core/Src/FRAM.c:4:17:CRC16_byte	3
+../Core/Src/FRAM.c:19:10:Calc_CRC16	2
+../Core/Src/FRAM.c:28:6:unpack_metadata	1
+../Core/Src/FRAM.c:38:6:pack_metadata	1
+../Core/Src/FRAM.c:47:19:writeFRAM	1
+../Core/Src/FRAM.c:51:19:readFRAM	1

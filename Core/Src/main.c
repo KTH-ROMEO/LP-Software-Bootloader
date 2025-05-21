@@ -47,12 +47,6 @@ IWDG_HandleTypeDef hiwdg;
 
 /* USER CODE BEGIN PV */
 
-typedef enum {
-	BOOT_NEXT_FROM_HERE = 0,
-	TRYING_TO_BOOT = 1,
-	BOOTED_SUCCESFULLY = 2
-} Boot_Feedback;
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -68,7 +62,7 @@ static void MX_I2C4_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #define METADATA_ADDRESS FRAM_SWEEP_TABLE_SECTION_START
-//#define METADATA_ADDRESS 0x08000000
+#define METADATA_SIZE 7
 #define GOLDEN_IMAGE_ADDRESS 0x08010000 // Application start address
 #define SECOND_IMAGE_ADDRESS 0x08020000
 #define THIRD_IMAGE_ADDRESS 0x08040000
@@ -78,45 +72,106 @@ typedef void (*pFunction)(void); // Function pointer type for application entry
 
 void JumpToApp(void)
 {
-    uint8_t magic_number = 10;
-    uint8_t image_index = 10;
-    uint8_t boot_counter = 10, boot_counter_2 = 10;
-    uint32_t *app_vector_table;
-    uint32_t app_sp, app_start;
+	uint32_t *app_vector_table;
+	uint32_t app_sp, app_start;
 
-    uint16_t addr = METADATA_ADDRESS;
+	uint16_t Received_CRC;
+	uint16_t Computed_CRC;
+	uint8_t metadata_raw[7] = {0};
+    Metadata_Struct metadata;
 
-    // --- Read metadata ---
-//    magic_number   = *(volatile uint8_t*)(METADATA_ADDRESS);
-//    image_index    = *(volatile uint8_t*)(METADATA_ADDRESS + 1);
-//    boot_counter  = *(volatile uint8_t*)(METADATA_ADDRESS + 2);
+    readFRAM(METADATA_ADDRESS, (uint8_t *)&metadata_raw, METADATA_SIZE);
 
-	readFRAM(addr, (uint8_t *)&magic_number, 1);
-	readFRAM(addr+1, (uint8_t *)&image_index, 1);
-	readFRAM(addr+2, (uint8_t *)&boot_counter, 1);
+    Received_CRC = ((uint16_t)metadata_raw[0] << 8) | metadata_raw[1];
+    Computed_CRC = Calc_CRC16(metadata_raw + 2, METADATA_SIZE - 2);
 
-	boot_counter++;
-
-	writeFRAM(addr+2, (uint8_t *)&boot_counter, 1);
-
-	readFRAM(addr+2, (uint8_t *)&boot_counter_2, 1);
-
-    // --- Handle IWDG reset: force booting golden image on watchdog reset ---
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST))
+    if(Computed_CRC != Received_CRC)
     {
-        __HAL_RCC_CLEAR_RESET_FLAGS();
-        image_index = 1;
+    	metadata.crc = 0xFFFF;
+    	metadata.new_metadata = NO;
+    	metadata.boot_feedback = BOOT_NEW_IMAGE;
+    	metadata.image_index = 1;
+    	metadata.boot_counter = 3;
+    	metadata.error_code = CORRUPTED_METADATA_ERROR;
+
+    	goto Compute_CRC;
     }
 
-    // --- Check metadata integrity ---
-    // TO DO: implement a proper CRC check
-    if (magic_number != 22)
+    unpack_metadata(&metadata, metadata_raw);
+
+    if(metadata.new_metadata == YES)
     {
-        image_index = 1; // Fallback to golden image
+    	metadata.new_metadata = NO;
+    	metadata.error_code = NO_BOOT_ERROR;
+    	goto Compute_CRC;
     }
+    else if(metadata.new_metadata == NO)
+    {
+    	if(metadata.boot_feedback == BOOTED_OK)
+    	{
+    	    // --- Handle IWDG reset: force booting golden image on watchdog reset ---
+    	    if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST))
+    	    {
+    	        __HAL_RCC_CLEAR_RESET_FLAGS();
+    	        metadata.new_metadata = YES;
+    	        metadata.boot_feedback = BOOT_NEW_IMAGE;
+    	        metadata.image_index = 1;
+    	    	metadata.boot_counter = 3;
+    	        metadata.error_code = HARDWARE_RESET_ERROR;
+    	        goto Compute_CRC;
+    	    }
+    	    else
+    	    {
+    	    	metadata.error_code = NO_BOOT_ERROR;
+    	    	goto Compute_CRC;
+    	    }
+    	}
+    	else if(metadata.boot_feedback == BOOT_NEW_IMAGE)
+    	{
+    		if(metadata.boot_counter > 0 && metadata.boot_counter < 4)
+    		{
+    			metadata.boot_counter --;
+    			metadata.error_code = BOOT_FAILURE_CURRENT_IMAGE_ERROR;
+    			goto Compute_CRC;
+    		}
+    		else
+    		{
+    	        metadata.new_metadata = YES;
+    	        metadata.image_index = 1;
+    	    	metadata.boot_counter = 3;
+    	        metadata.error_code = BOOT_FAILURE_PREVIOUS_IMAGE_ERROR;
+    	        goto Compute_CRC;
+    		}
+    	}
+    	else
+    	{
+    		goto Wrong_Metadata;
+    	}
+    }
+    else
+    {
+    	goto Wrong_Metadata;
+    }
+
+Wrong_Metadata:
+
+	metadata.new_metadata = YES;
+	metadata.boot_feedback = BOOT_NEW_IMAGE;
+	metadata.image_index = 1;
+	metadata.boot_counter = 3;
+	metadata.error_code = HARDWARE_RESET_ERROR;
+	goto Compute_CRC;
+
+Compute_CRC:
+	pack_metadata(&metadata, metadata_raw);
+	Computed_CRC = Calc_CRC16(metadata_raw + 2, METADATA_SIZE - 2);
+    metadata_raw[0] = (Computed_CRC >> 8) & 0xFF;  // MSB
+    metadata_raw[1] = Computed_CRC & 0xFF;         // LSB
+
+    writeFRAM(METADATA_ADDRESS, (uint8_t *)&metadata_raw, METADATA_SIZE);
 
     // --- Select application vector table based on image index ---
-    switch (image_index)
+    switch (metadata.image_index)
     {
         case 1: app_vector_table = (uint32_t*)GOLDEN_IMAGE_ADDRESS; break;
         case 2: app_vector_table = (uint32_t*)SECOND_IMAGE_ADDRESS; break;
